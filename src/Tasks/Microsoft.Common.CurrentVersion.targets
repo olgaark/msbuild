@@ -3426,9 +3426,12 @@ Copyright (C) Microsoft Corporation. All rights reserved.
       <CustomAdditionalCompileInputs Include="$(IntermediateOutputPath)$(MSBuildProjectFile).CoreCompileInputs.cache" />
       <CoreCompileCache Include="@(Compile)" />
       <CoreCompileCache Include="@(ReferencePath)" />
+      <CoreCompileCache Include="$(DefineConstants)" />
     </ItemGroup>
 
-    <Hash ItemsToHash="@(CoreCompileCache)">
+    <Hash 
+      ItemsToHash="@(CoreCompileCache)" 
+      IgnoreCase="$([MSBuild]::ValueOrDefault(`$(CoreCompileCacheIgnoreCase)`, `true`))">
       <Output TaskParameter="HashResult" PropertyName="CoreCompileDependencyHash" />
     </Hash>
 

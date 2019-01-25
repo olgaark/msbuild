@@ -24,7 +24,6 @@ namespace Microsoft.Build.Graph
     /// </summary>
     public sealed class ProjectGraph
     {
-        private const string ProjectReferenceItemName = "ProjectReference";
         private const string FullPathMetadataName = "FullPath";
         private const string ToolsVersionMetadataName = "ToolsVersion";
         private const string PropertiesMetadataName = "Properties";
@@ -38,7 +37,7 @@ namespace Microsoft.Build.Graph
         private const string ProjectReferenceTargetsMetadataName = "Targets";
         private const string DefaultTargetsMarker = ".default";
 
-        private static readonly char[] PropertySeparator = { ';' };
+        private static readonly char[] PropertySeparator = MSBuildConstants.SemicolonChar;
 
         private readonly ConcurrentDictionary<ConfigurationMetadata, ProjectGraphNode> _allParsedProjects =
             new ConcurrentDictionary<ConfigurationMetadata, ProjectGraphNode>();
@@ -240,6 +239,8 @@ namespace Microsoft.Build.Graph
                 EntryPointNodes = entryPointNodes.AsReadOnly();
                 ProjectNodes = _allParsedProjects.Values.ToList();
                 GraphRoots = graphRoots.AsReadOnly();
+
+                _projectNodesTopologicallySorted = new Lazy<IReadOnlyCollection<ProjectGraphNode>>(() => TopologicalSort(GraphRoots, ProjectNodes));
             }
             else
             {
@@ -256,6 +257,47 @@ namespace Microsoft.Build.Graph
         /// Get an unordered collection of all project nodes in the graph.
         /// </summary>
         public IReadOnlyCollection<ProjectGraphNode> ProjectNodes { get; }
+
+        private readonly Lazy<IReadOnlyCollection<ProjectGraphNode>> _projectNodesTopologicallySorted;
+
+        private static IReadOnlyCollection<ProjectGraphNode> TopologicalSort(IReadOnlyCollection<ProjectGraphNode> graphRoots, IReadOnlyCollection<ProjectGraphNode> graphNodes)
+        {
+            var toposort = new List<ProjectGraphNode>(graphNodes.Count);
+            var partialRoots = new Queue<ProjectGraphNode>(graphNodes.Count);
+            var inDegree = graphNodes.ToDictionary(n => n, n => n.ReferencingProjects.Count);
+
+            foreach (var root in graphRoots)
+            {
+                partialRoots.Enqueue(root);
+            }
+
+            while (partialRoots.Count != 0)
+            {
+                var partialRoot = partialRoots.Dequeue();
+
+                toposort.Add(partialRoot);
+
+                foreach (var reference in partialRoot.ProjectReferences)
+                {
+                    if (--inDegree[reference] == 0)
+                    {
+                        partialRoots.Enqueue(reference);
+                    }
+                }
+            }
+
+            ErrorUtilities.VerifyThrow(toposort.Count == graphNodes.Count, "sorted node count must be equal to total node count");
+
+            toposort.Reverse();
+
+            return toposort;
+        }
+        
+        /// <summary>
+        /// Get a topologically sorted collection of all project nodes in the graph.
+        /// Referenced projects appear before the referencing projects.
+        /// </summary>
+        public IReadOnlyCollection<ProjectGraphNode> ProjectNodesTopologicallySorted => _projectNodesTopologicallySorted.Value;
 
         public IReadOnlyCollection<ProjectGraphNode> GraphRoots { get; }
 
@@ -438,7 +480,7 @@ namespace Microsoft.Build.Graph
                     var task = new Task(() =>
                     {
                         ProjectGraphNode parsedProject = CreateNewNode(projectToEvaluate, projectCollection, projectInstanceFactory);
-                        IEnumerable<ProjectItemInstance> projectReferenceItems = parsedProject.ProjectInstance.GetItems(ProjectReferenceItemName);
+                        IEnumerable<ProjectItemInstance> projectReferenceItems = parsedProject.ProjectInstance.GetItems(MSBuildConstants.ProjectReferenceItemName);
                         foreach (var projectReferenceToParse in projectReferenceItems)
                         {
                             if (!string.IsNullOrEmpty(projectReferenceToParse.GetMetadataValue(ToolsVersionMetadataName)))
@@ -518,7 +560,7 @@ namespace Microsoft.Build.Graph
             PropertyDictionary<ProjectPropertyInstance> globalProperties)
         {
             nodeState[node] = NodeState.InProcess;
-            IEnumerable<ProjectItemInstance> projectReferenceItems = node.ProjectInstance.GetItems(ProjectReferenceItemName);
+            IEnumerable<ProjectItemInstance> projectReferenceItems = node.ProjectInstance.GetItems(MSBuildConstants.ProjectReferenceItemName);
             foreach (var projectReferenceToParse in projectReferenceItems)
             {
                 string projectReferenceFullPath = projectReferenceToParse.GetMetadataValue(FullPathMetadataName);

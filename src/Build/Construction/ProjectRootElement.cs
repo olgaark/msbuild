@@ -1496,7 +1496,7 @@ namespace Microsoft.Build.Construction
 
                     _encoding = saveEncoding;
 
-                    var fileInfo = FileUtilities.GetFileInfoNoThrow(_projectFileLocation.File);
+                    FileInfo fileInfo = FileUtilities.GetFileInfoNoThrow(_projectFileLocation.File);
 
                     // If the file was deleted by a race with someone else immediately after it was written above
                     // then we obviously can't read the write time. In this obscure case, we'll retain the 
@@ -1834,7 +1834,7 @@ namespace Microsoft.Build.Construction
 
         private static IEnumerable<SdkReference> ParseSdks(string sdks, IElementLocation sdkLocation)
         {
-            foreach (string sdk in sdks.Split(';').Select(i => i.Trim()))
+            foreach (string sdk in sdks.Split(MSBuildConstants.SemicolonChar).Select(i => i.Trim()))
             {
                 if (!SdkReference.TryParse(sdk, out SdkReference sdkReference))
                 {

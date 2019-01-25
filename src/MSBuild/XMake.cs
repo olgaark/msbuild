@@ -114,6 +114,8 @@ namespace Microsoft.Build.CommandLine
         /// </summary>
         private static CancellationTokenSource s_buildCancellationSource = new CancellationTokenSource();
 
+        private static readonly char[] s_commaSemicolon = { ',', ';' };
+
         /// <summary>
         /// Static constructor
         /// </summary>
@@ -561,6 +563,8 @@ namespace Microsoft.Build.CommandLine
                 bool interactive = false;
                 bool isolateProjects = false;
                 bool graphBuild = false;
+                string[] inputResultsCaches = null;
+                string outputResultsCache = null;
 
                 CommandLineSwitches switchesFromAutoResponseFile;
                 CommandLineSwitches switchesNotFromAutoResponseFile;
@@ -593,6 +597,8 @@ namespace Microsoft.Build.CommandLine
                         ref restoreProperties,
                         ref isolateProjects,
                         ref graphBuild,
+                        ref inputResultsCaches,
+                        ref outputResultsCache,
                         recursing: false
                         ))
                 {
@@ -625,11 +631,33 @@ namespace Microsoft.Build.CommandLine
 #endif
                         {
                             // if everything checks out, and sufficient information is available to start building
-                            if (!BuildProject(projectFile, targets, toolsVersion, globalProperties, restoreProperties, loggers, verbosity, distributedLoggerRecords.ToArray(),
+                            if (
+                                !BuildProject(
+                                    projectFile,
+                                    targets,
+                                    toolsVersion,
+                                    globalProperties,
+                                    restoreProperties,
+                                    loggers,
+                                    verbosity,
+                                    distributedLoggerRecords.ToArray(),
 #if FEATURE_XML_SCHEMA_VALIDATION
-                            needToValidateProject, schemaFile,
+                                    needToValidateProject, schemaFile,
 #endif
-                            cpuCount, enableNodeReuse, preprocessWriter, detailedSummary, warningsAsErrors, warningsAsMessages, enableRestore, profilerLogger, enableProfiler, interactive, isolateProjects, graphBuild))
+                                    cpuCount,
+                                    enableNodeReuse,
+                                    preprocessWriter,
+                                    detailedSummary,
+                                    warningsAsErrors,
+                                    warningsAsMessages,
+                                    enableRestore,
+                                    profilerLogger,
+                                    enableProfiler,
+                                    interactive,
+                                    isolateProjects,
+                                    graphBuild,
+                                    inputResultsCaches,
+                                    outputResultsCache))
                             {
                                 exitType = ExitType.BuildError;
                             }
@@ -931,7 +959,9 @@ namespace Microsoft.Build.CommandLine
             bool enableProfiler,
             bool interactive,
             bool isolateProjects,
-            bool graphBuild
+            bool graphBuild,
+            string[] inputResultsCaches,
+            string outputResultsCache
         )
         {
             if (FileUtilities.IsVCProjFilename(projectFile) || FileUtilities.IsDspFilename(projectFile))
@@ -1091,6 +1121,8 @@ namespace Microsoft.Build.CommandLine
                     parameters.WarningsAsMessages = warningsAsMessages;
                     parameters.Interactive = interactive;
                     parameters.IsolateProjects = isolateProjects;
+                    parameters.InputResultsCacheFiles = inputResultsCaches;
+                    parameters.OutputResultsCacheFile = outputResultsCache;
 
                     // Propagate the profiler flag into the project load settings so the evaluator
                     // can pick it up
@@ -1133,6 +1165,25 @@ namespace Microsoft.Build.CommandLine
                             // Determine if the user specified /Target:Restore which means we should only execute a restore in the fancy way that /restore is executed
                             bool restoreOnly = targets.Length == 1 && String.Equals(targets[0], MSBuildConstants.RestoreTargetName, StringComparison.OrdinalIgnoreCase);
 
+                            // ExecuteRestore below changes the current working directory and does not change back. Therefore, if we try to create the request after
+                            // the restore call we end up with incorrectly normalized paths to the project. To avoid that, we are preparing the request before the first
+                            // build (restore) request.
+                            // PS: We couldn't find a straight forward way to make the restore invocation clean up after itself, so we should this ugly but less risky
+                            // approach.
+                            GraphBuildRequestData graphBuildRequest = null;
+                            BuildRequestData buildRequest = null;
+                            if (!restoreOnly)
+                            {
+                                if (graphBuild)
+                                {
+                                    graphBuildRequest = new GraphBuildRequestData(new ProjectGraphEntryPoint(projectFile, globalProperties), targets, null);
+                                }
+                                else
+                                {
+                                    buildRequest = new BuildRequestData(projectFile, globalProperties, toolsVersion, targets, null);
+                                }
+                            }
+
                             if (enableRestore || restoreOnly)
                             {
                                 (result, exception) = ExecuteRestore(projectFile, toolsVersion, buildManager, restoreProperties.Count > 0 ? restoreProperties : globalProperties);
@@ -1147,13 +1198,11 @@ namespace Microsoft.Build.CommandLine
                             {
                                 if (graphBuild)
                                 {
-                                    var request = new GraphBuildRequestData(new ProjectGraphEntryPoint(projectFile, globalProperties), targets, null);
-                                    (result, exception) = ExecuteGraphBuild(buildManager, request);
+                                    (result, exception) = ExecuteGraphBuild(buildManager, graphBuildRequest);
                                 }
                                 else
                                 {
-                                    var request = new BuildRequestData(projectFile, globalProperties, toolsVersion, targets, null);
-                                    (result, exception) = ExecuteBuild(buildManager, request);
+                                    (result, exception) = ExecuteBuild(buildManager, buildRequest);
                                 }
                             }
 
@@ -1954,6 +2003,8 @@ namespace Microsoft.Build.CommandLine
             ref Dictionary<string, string> restoreProperties,
             ref bool isolateProjects,
             ref bool graphBuild,
+            ref string[] inputResultsCaches,
+            ref string outputResultsCache,
             bool recursing
         )
         {
@@ -2067,6 +2118,8 @@ namespace Microsoft.Build.CommandLine
                                                                ref restoreProperties,
                                                                ref isolateProjects,
                                                                ref graphBuild,
+                                                               ref inputResultsCaches,
+                                                               ref outputResultsCache,
                                                                recursing: true
                                                              );
                         }
@@ -2124,6 +2177,10 @@ namespace Microsoft.Build.CommandLine
                         graphBuild = ProcessBooleanSwitch(commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GraphBuild], defaultValue: true, resourceName: "InvalidGraphBuildValue");
                     }
 
+                    inputResultsCaches = ProcessInputResultsCaches(commandLineSwitches);
+
+                    outputResultsCache = ProcessOutputResultsCache(commandLineSwitches);
+
                     // figure out which loggers are going to listen to build events
                     string[][] groupedFileLoggerParameters = commandLineSwitches.GetFileLoggerParameters();
 
@@ -2174,6 +2231,20 @@ namespace Microsoft.Build.CommandLine
             ErrorUtilities.VerifyThrow(!invokeBuild || !String.IsNullOrEmpty(projectFile), "We should have a project file if we're going to build.");
 
             return invokeBuild;
+        }
+
+        private static string ProcessOutputResultsCache(CommandLineSwitches commandLineSwitches)
+        {
+            return commandLineSwitches.IsParameterizedSwitchSet(CommandLineSwitches.ParameterizedSwitch.OutputResultsCache)
+                ? commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.OutputResultsCache].FirstOrDefault(p => p != null) ?? string.Empty
+                : null;
+        }
+
+        private static string[] ProcessInputResultsCaches(CommandLineSwitches commandLineSwitches)
+        {
+            return commandLineSwitches.IsParameterizedSwitchSet(CommandLineSwitches.ParameterizedSwitch.InputResultsCaches)
+                ? commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.InputResultsCaches].Where(p => p != null).ToArray()
+                : null;
         }
 
         /// <summary>
@@ -2257,7 +2328,7 @@ namespace Microsoft.Build.CommandLine
             ISet<string> warningsAsErrors = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (string code in parameters
-                .SelectMany(parameter => parameter?.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries) ?? new string[] { null }))
+                .SelectMany(parameter => parameter?.Split(s_commaSemicolon, StringSplitOptions.RemoveEmptyEntries) ?? new string[] { null }))
             {
                 if (code == null)
                 {
@@ -2286,7 +2357,7 @@ namespace Microsoft.Build.CommandLine
             ISet<string> warningsAsMessages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (string code in parameters
-                .SelectMany(parameter => parameter?.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+                .SelectMany(parameter => parameter?.Split(s_commaSemicolon, StringSplitOptions.RemoveEmptyEntries))
                 .Where(i => !String.IsNullOrWhiteSpace(i))
                 .Select(i => i.Trim()))
             {
@@ -2755,12 +2826,12 @@ namespace Microsoft.Build.CommandLine
         /// <summary>
         /// The = sign is used to pair properties with their values on the command line.
         /// </summary>
-        private static readonly char[] s_propertyValueSeparator = { '=' };
+        private static readonly char[] s_propertyValueSeparator = MSBuildConstants.EqualsChar;
 
         /// <summary>
         /// This is a set of wildcard chars which can cause a file extension to be invalid 
         /// </summary>
-        private static readonly char[] s_wildcards = { '*', '?' };
+        private static readonly char[] s_wildcards = MSBuildConstants.WildcardChars;
 
         /// <summary>
         /// Determines which ToolsVersion was specified on the command line.  If more than
@@ -2878,7 +2949,7 @@ namespace Microsoft.Build.CommandLine
         {
             for (int i = 0; i < parametersToAggregate.Length; i++)
             {
-                parametersToAggregate[i] = parametersToAggregate[i].Trim(';');
+                parametersToAggregate[i] = parametersToAggregate[i].Trim(MSBuildConstants.SemicolonChar);
             }
 
             // Join the logger parameters into one string seperated by semicolons
@@ -3105,7 +3176,7 @@ namespace Microsoft.Build.CommandLine
         /// </summary>
         internal static string ExtractAnyLoggerParameter(string parameters, params string[] parameterNames)
         {
-            string[] nameValues = parameters.Split(';');
+            string[] nameValues = parameters.Split(MSBuildConstants.SemicolonChar);
             string result = null;
 
             foreach (string nameValue in nameValues)
@@ -3135,7 +3206,7 @@ namespace Microsoft.Build.CommandLine
 
             if (!String.IsNullOrEmpty(parameter))
             {
-                string[] nameValuePair = parameter.Split('=');
+                string[] nameValuePair = parameter.Split(MSBuildConstants.EqualsChar);
 
                 value = (nameValuePair.Length > 1) ? nameValuePair[1] : null;
             }
@@ -3566,6 +3637,8 @@ namespace Microsoft.Build.CommandLine
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_32_ProfilerSwitch"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_34_InteractiveSwitch"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_35_IsolateProjectsSwitch"));
+            Console.WriteLine(AssemblyResources.GetString("HelpMessage_InputCachesFiles"));
+            Console.WriteLine(AssemblyResources.GetString("HelpMessage_OutputCacheFile"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_36_GraphBuildSwitch"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_7_ResponseFile"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_8_NoAutoResponseSwitch"));
