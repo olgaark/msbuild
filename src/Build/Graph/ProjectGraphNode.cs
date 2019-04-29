@@ -4,7 +4,7 @@
 using System.Collections.Generic;
 using Microsoft.Build.Execution;
 
-namespace Microsoft.Build.Graph
+namespace Microsoft.Build.Experimental.Graph
 {
     /// <summary>
     /// Represents the node for a particular project in a project graph.
@@ -15,12 +15,9 @@ namespace Microsoft.Build.Graph
         private readonly List<ProjectGraphNode> _referencingProjects = new List<ProjectGraphNode>();
 
         // No public creation.
-        internal ProjectGraphNode(
-            ProjectInstance projectInstance,
-            IReadOnlyDictionary<string, string> globalProperties)
+        internal ProjectGraphNode(ProjectInstance projectInstance)
         {
             ProjectInstance = projectInstance;
-            GlobalProperties = globalProperties;
         }
 
         /// <summary>
@@ -38,12 +35,11 @@ namespace Microsoft.Build.Graph
         /// </summary>
         public ProjectInstance ProjectInstance { get; }
 
-        /// <summary>
-        /// Gets the global properties which should be used to evaluate and execute this node in the graph.
-        /// </summary>
-        public IReadOnlyDictionary<string, string> GlobalProperties { get; }
-
         internal void AddProjectReference(ProjectGraphNode projectGraphNode) => _projectReferences.Add(projectGraphNode);
+
+        internal void RemoveReferences() => _projectReferences.Clear();
+
+        internal void RemoveProjectReference(ProjectGraphNode projectGraphNode) => _projectReferences.Remove(projectGraphNode);
 
         internal void AddReferencingProject(ProjectGraphNode projectGraphNode) => _referencingProjects.Add(projectGraphNode);
     }

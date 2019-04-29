@@ -1,6 +1,6 @@
 [CmdletBinding(PositionalBinding=$false)]
 Param(
-  [string] $hostType,
+  [string] $msbuildEngine,
   [string] $configuration = "Debug",
   [switch] $prepareMachine,
   [bool] $buildStage1 = $True,
@@ -50,9 +50,9 @@ $ArtifactsDir = Join-Path $RepoRoot "artifacts"
 $Stage1Dir = Join-Path $RepoRoot "stage1"
 $Stage1BinDir = Join-Path $Stage1Dir "bin"
 
-if ($hostType -eq '')
+if ($msbuildEngine -eq '')
 {
-  $hostType = 'full'
+  $msbuildEngine = 'vs'
 }
 
 $msbuildToUse = "msbuild"
@@ -66,7 +66,7 @@ try {
 
   if ($buildStage1)
   {
-    & $PSScriptRoot\Common\Build.ps1 -restore -build -ci /p:CreateBootstrap=true @properties
+    & $PSScriptRoot\Common\Build.ps1 -restore -build -ci -msbuildEngine $msbuildEngine /p:CreateBootstrap=true @properties
   }
 
   $bootstrapRoot = Join-Path $Stage1BinDir "bootstrap"
@@ -75,7 +75,7 @@ try {
   $dotnetToolPath = InitializeDotNetCli $true
   $dotnetExePath = Join-Path $dotnetToolPath "dotnet.exe"
 
-  if ($hostType -eq 'full')
+  if ($msbuildEngine -eq 'vs')
   {
     $buildToolPath = Join-Path $bootstrapRoot "net472\MSBuild\Current\Bin\MSBuild.exe"
     $buildToolCommand = "";
@@ -108,6 +108,9 @@ try {
 
   # turn vbcscompiler back on to save on time. It speeds up the build considerably
   $env:UseSharedCompilation="true"
+
+  # Ensure that debug bits fail fast, rather than hanging waiting for a debugger attach.
+  $env:MSBUILDDONOTLAUNCHDEBUGGER="true"
 
   # When using bootstrapped MSBuild:
   # - Turn off node reuse (so that bootstrapped MSBuild processes don't stay running and lock files)
